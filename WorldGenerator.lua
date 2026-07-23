@@ -1,4 +1,3 @@
---!strict
 -- Credit: Discord: dropy_dev_47097 | Roblox: AXCOP4
 -- Connected Discord-GitHub
 
@@ -6,19 +5,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Players = game:GetService("Players")
 
-type GenerationConfig = {
-	WORLD_SIZE: number,
-	BLOCK_SIZE: number,
-	SEA_LEVEL: number,
-	MOUNTAIN_HEIGHT: number,
-	NOISE_SCALE_TERRAIN: number,
-	NOISE_SCALE_CAVE: number,
-	CAVE_THRESHOLD: number,
-	TREE_CHANCE: number,
-	ORE_CHANCES: { [string]: number }
-}
-
-local CONFIG: GenerationConfig = {
+-- world config n ore drop rates
+local CONFIG = {
 	WORLD_SIZE = 40,
 	BLOCK_SIZE = 4,
 	SEA_LEVEL = 4,
@@ -34,41 +22,31 @@ local CONFIG: GenerationConfig = {
 	}
 }
 
+-- remotes n asset folders
+local event = ReplicatedStorage:WaitForChild("GenerateWorld")
+local blocksFolder = ReplicatedStorage:WaitForChild("Blocks")
+local assetsFolder = ReplicatedStorage:WaitForChild("ModelsAssets")
+
+-- templates tbl
+local templates = {
+	Grass = blocksFolder:WaitForChild("Grass"),
+	Dirt = blocksFolder:WaitForChild("Dirt"),
+	Stone = blocksFolder:WaitForChild("Stone"),
+	Water = blocksFolder:WaitForChild("Water"),
+	Sand = blocksFolder:WaitForChild("Sand"),
+	Bedrock = blocksFolder:WaitForChild("Bedrock"),
+	CoalOre = blocksFolder:WaitForChild("Coalore"),
+	IronOre = blocksFolder:WaitForChild("Ironore"),
+	DiamondOre = blocksFolder:WaitForChild("Diamond"),
+}
+
+local treeTemplate = assetsFolder:WaitForChild("MinecraftTree")
+
+-- main generator class
 local TerrainGenerator = {}
 TerrainGenerator.__index = TerrainGenerator
 
-type TerrainGeneratorImpl = {
-	Seed: number,
-	Random: Random,
-	WorldFolder: Folder?,
-	TerrainFolder: Folder?,
-	FloraFolder: Folder?,
-	WorldGrid: { [number]: { [number]: { [number]: string } } },
-	IsGenerating: boolean,
-	TotalBlocksSpawned: number,
-}
-
-export type TerrainGenerator = typeof(setmetatable({} :: TerrainGeneratorImpl, TerrainGenerator))
-
-local event = ReplicatedStorage:WaitForChild("GenerateWorld") :: RemoteEvent
-local blocksFolder = ReplicatedStorage:WaitForChild("Blocks") :: Folder
-local assetsFolder = ReplicatedStorage:WaitForChild("ModelsAssets") :: Folder
-
-local templates: { [string]: BasePart } = {
-	Grass = blocksFolder:WaitForChild("Grass") :: BasePart,
-	Dirt = blocksFolder:WaitForChild("Dirt") :: BasePart,
-	Stone = blocksFolder:WaitForChild("Stone") :: BasePart,
-	Water = blocksFolder:WaitForChild("Water") :: BasePart,
-	Sand = blocksFolder:WaitForChild("Sand") :: BasePart,
-	Bedrock = blocksFolder:WaitForChild("Bedrock") :: BasePart,
-	CoalOre = blocksFolder:WaitForChild("Coalore") :: BasePart,
-	IronOre = blocksFolder:WaitForChild("Ironore") :: BasePart,
-	DiamondOre = blocksFolder:WaitForChild("Diamond") :: BasePart,
-}
-
-local treeTemplate = assetsFolder:WaitForChild("MinecraftTree") :: Model
-
-function TerrainGenerator.new(customSeed: number?): TerrainGenerator
+function TerrainGenerator.new(customSeed)
 	local self = setmetatable({}, TerrainGenerator)
 	self.Seed = customSeed or Random.new():NextInteger(1, 999999)
 	self.Random = Random.new(self.Seed)
@@ -81,14 +59,16 @@ function TerrainGenerator.new(customSeed: number?): TerrainGenerator
 	return self
 end
 
-function TerrainGenerator:CalculateHeight(x: number, z: number): number
+-- calculates height w/ 2 noise layers
+function TerrainGenerator:CalculateHeight(x, z)
 	local baseNoise = math.noise(x / CONFIG.NOISE_SCALE_TERRAIN, z / CONFIG.NOISE_SCALE_TERRAIN, self.Seed / 10000) * 6
 	local detailNoise = math.noise(x / 12, z / 12, self.Seed / 5000) * 2.5
 	local combined = 6 + baseNoise + detailNoise
 	return math.clamp(math.floor(combined), 2, CONFIG.MOUNTAIN_HEIGHT)
 end
 
-function TerrainGenerator:IsCaveCell(x: number, y: number, z: number): boolean
+-- checks if point is a cave hollow
+function TerrainGenerator:IsCaveCell(x, y, z)
 	if y <= 1 then return false end
 	local caveNoise = math.noise(
 		x / CONFIG.NOISE_SCALE_CAVE, 
@@ -98,7 +78,8 @@ function TerrainGenerator:IsCaveCell(x: number, y: number, z: number): boolean
 	return caveNoise > CONFIG.CAVE_THRESHOLD
 end
 
-function TerrainGenerator:DetermineOreType(y: number): string
+-- picks ore type based on y level n RNG
+function TerrainGenerator:DetermineOreType(y)
 	local roll = self.Random:NextNumber()
 	if y <= 3 and roll < CONFIG.ORE_CHANCES.Diamond then
 		return "DiamondOre"
@@ -110,6 +91,7 @@ function TerrainGenerator:DetermineOreType(y: number): string
 	return "Stone"
 end
 
+-- cleans up old map n sets up folders
 function TerrainGenerator:InitializeFolders()
 	local oldWorld = Workspace:FindFirstChild("GeneratedWorld")
 	if oldWorld then 
@@ -133,6 +115,7 @@ function TerrainGenerator:InitializeFolders()
 	self.FloraFolder = floraFolder
 end
 
+-- builds grid in memory first so we dont lag
 function TerrainGenerator:BuildWorldMatrix()
 	self.WorldGrid = {}
 
@@ -142,24 +125,29 @@ function TerrainGenerator:BuildWorldMatrix()
 			self.WorldGrid[gridX][gridZ] = {}
 			local height = self:CalculateHeight(gridX, gridZ)
 
+			-- map base
 			self.WorldGrid[gridX][gridZ][0] = "Bedrock"
 
+			-- stone n ores layers
 			for y = 1, height - 2 do
 				if not self:IsCaveCell(gridX, y, gridZ) then
 					self.WorldGrid[gridX][gridZ][y] = self:DetermineOreType(y)
 				end
 			end
 
+			-- dirt layer
 			if height - 1 > 0 then
 				self.WorldGrid[gridX][gridZ][height - 1] = "Dirt"
 			end
 
+			-- top block stuff
 			local topBlock = "Grass"
 			if height <= CONFIG.SEA_LEVEL + 1 then
 				topBlock = "Sand"
 			end
 			self.WorldGrid[gridX][gridZ][height] = topBlock
 
+			-- water fill below sea lvl
 			if height < CONFIG.SEA_LEVEL then
 				for waterY = height + 1, CONFIG.SEA_LEVEL do
 					self.WorldGrid[gridX][gridZ][waterY] = "Water"
@@ -169,7 +157,8 @@ function TerrainGenerator:BuildWorldMatrix()
 	end
 end
 
-function TerrainGenerator:PlantTree(posX: number, groundY: number, posZ: number)
+-- tree spawner w/ random y rot
+function TerrainGenerator:PlantTree(posX, groundY, posZ)
 	if not self.FloraFolder then return end
 
 	local tree = treeTemplate:Clone()
@@ -188,9 +177,10 @@ function TerrainGenerator:PlantTree(posX: number, groundY: number, posZ: number)
 	tree.Parent = self.FloraFolder
 end
 
-function TerrainGenerator:InstantiateTerrain(): ( {BasePart}, {CFrame} )
-	local partsBuffer: {BasePart} = {}
-	local cframesBuffer: {CFrame} = {}
+-- clones blocks n fills buffers for bulk move
+function TerrainGenerator:InstantiateTerrain()
+	local partsBuffer = {}
+	local cframesBuffer = {}
 	local halfSize = (CONFIG.WORLD_SIZE - 1) / 2
 	self.TotalBlocksSpawned = 0
 
@@ -214,8 +204,9 @@ function TerrainGenerator:InstantiateTerrain(): ( {BasePart}, {CFrame} )
 					block.Parent = self.TerrainFolder
 				end
 
-				self.TotalBlocksSpawned += 1
+				self.TotalBlocksSpawned = self.TotalBlocksSpawned + 1
 
+				-- tree chance on grass
 				if blockType == "Grass" and y > CONFIG.SEA_LEVEL + 1 then
 					if self.Random:NextNumber() < CONFIG.TREE_CHANCE then
 						self:PlantTree(posX, y, posZ)
@@ -224,6 +215,7 @@ function TerrainGenerator:InstantiateTerrain(): ( {BasePart}, {CFrame} )
 			end
 		end
 
+		-- yield every 5 loops so server doesnt freeze
 		if gridX % 5 == 0 then
 			task.wait()
 		end
@@ -232,7 +224,8 @@ function TerrainGenerator:InstantiateTerrain(): ( {BasePart}, {CFrame} )
 	return partsBuffer, cframesBuffer
 end
 
-function TerrainGenerator:Generate(): boolean
+-- main runner method
+function TerrainGenerator:Generate()
 	if self.IsGenerating then 
 		return false 
 	end
@@ -243,6 +236,7 @@ function TerrainGenerator:Generate(): boolean
 
 	local partsBuffer, cframesBuffer = self:InstantiateTerrain()
 
+	-- move everything at once bc performance
 	Workspace:BulkMoveTo(partsBuffer, cframesBuffer, Enum.BulkMoveMode.FireCFrameChanged)
 
 	if self.WorldFolder then
@@ -254,9 +248,10 @@ function TerrainGenerator:Generate(): boolean
 	return true
 end
 
-local activeGenerator: TerrainGenerator? = nil
+local activeGenerator = nil
 
-local function HandleWorldGenerationRequest(player: Player)
+-- main server listener
+local function HandleWorldGenerationRequest(player)
 	if activeGenerator and activeGenerator.IsGenerating then
 		event:FireClient(player, "Busy")
 		return
@@ -276,7 +271,7 @@ local function HandleWorldGenerationRequest(player: Player)
 		local elapsedTime = math.floor((os.clock() - startTime) * 1000) / 1000
 
 		if success then
-			print(string.format("[WorldGenerator]: Chunk generated successfully in %s sec. Total blocks: %d", tostring(elapsedTime), generator.TotalBlocksSpawned))
+			print("[WorldGenerator]: Chunk generated in " .. tostring(elapsedTime) .. "s. Total blocks: " .. tostring(generator.TotalBlocksSpawned))
 			event:FireAllClients("Finished", generator.Seed, generator.TotalBlocksSpawned)
 		else
 			if activeGenerator then
